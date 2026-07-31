@@ -4,6 +4,7 @@ import sys
 import json
 from collections import Counter
 from collector import SimpleFiveHundredCollector
+from filter import FourStepFilter
 
 # Windows 默认 gbk 编码会导致中文输入/输出乱码，强制 utf-8
 if hasattr(sys.stdin, 'reconfigure'):
@@ -17,9 +18,9 @@ def print_welcome():
     print("\n" + "=" * 60)
     print("           四步过滤助手 - MVP版")
     print("=" * 60)
-    print("\n功能：从500.com采集今日赛事与盘口赔率")
-    print("  - 赛事：主客场 / 时间 / 状态 / 让球 / 排名")
-    print("  - 盘口：胜平负(欧赔) / 让球(亚盘) / 大小球，含初盘与临盘")
+    print("\n功能：从500.com采集赛事数据 + 四步过滤分析")
+    print("  采集：主客场 / 胜平负 / 让球 / 大小球 / 凯利 / 战绩（初盘+临盘）")
+    print("  分析：①排雷 ②数据评分 ③市场信号 ④组合评级")
     print("=" * 60 + "\n")
 
 
@@ -64,6 +65,30 @@ def print_match_odds(odds):
           'live_handicap', 'live_home_water', 'live_away_water'])
 
 
+def print_filter_result(r):
+    """打印四步过滤结果"""
+    print("\n" + "=" * 60)
+    print(f"{r['match']}  [{r.get('league', '')}] {r.get('time', '')}")
+    print("=" * 60)
+
+    s1 = r['step1']
+    ok1 = '✅ 通过' if s1['pass'] else '❌ 淘汰'
+    print(f"\n第一步 排雷: {ok1}  赔率={s1.get('odds', '-')}  警告={s1.get('warnings') or '无'}")
+    if not s1['pass']:
+        print(f"  淘汰原因: {s1.get('reason', '')}")
+        return
+
+    s2, s3, s4 = r['step2'], r['step3'], r['step4']
+    d2 = s2['detail']
+    print(f"第二步 评分: {s2['score']}分 评级={s2['grade']}  "
+          f"(进攻{d2['进攻']}/主场{d2['主场']}/近况{d2['近况']})")
+    d3 = s3['detail']
+    print(f"第三步 市场: {s3['score']}分 {d3['verdict']}  "
+          f"(赔率走势{d3['赔率走势']}/凯利趋势{d3['凯利趋势']}/临盘凯利{d3['临盘凯利']})")
+    verdict = '✅ 建议出单' if r['passed'] else '⚠️ 观望/淘汰'
+    print(f"第四步 评级: {s4['grade']}  建议仓位: {s4['stake']}  -> {verdict}")
+
+
 def main():
     print_welcome()
 
@@ -96,20 +121,19 @@ def main():
         print("  2. 查看某场完整盘口(胜平负/让球/大小球 初盘+临盘)")
         print("  3. 导出当前赛事为 JSON")
         print("  4. 重新采集赛事列表")
-        print("  5. 退出")
+        print("  5. 四步过滤分析(选某场,采集全部数据后跑四步)")
+        print("  6. 退出")
         print("-" * 40)
 
-        choice = input("\n请输入选项 (1-5): ").strip()
+        choice = input("\n请输入选项 (1-6): ").strip()
 
         if choice == "1":
-            # 按联赛筛选
             cnt = Counter(m['league'] for m in all_matches)
             print("\n当前可选联赛:")
             for lg, n in cnt.most_common():
                 print(f"  {lg}  {n}场")
             inp = input("\n输入要筛选的联赛(逗号或斜杠分隔, 如 西甲,英超,德甲; 留空=全部): ").strip()
             if inp:
-                # 兼容中英文逗号、斜杠分隔
                 wanted = {s.strip() for s in inp.replace('，', ',').replace('/', ',').split(',') if s.strip()}
                 matches = [m for m in all_matches if m['league'] in wanted]
                 print(f"\n已筛选 {len(matches)} 场 (共 {len(all_matches)} 场)")
@@ -155,6 +179,28 @@ def main():
                 print(f"采集失败: {e}")
 
         elif choice == "5":
+            if not matches:
+                print("\n无赛事，请先采集")
+                continue
+            try:
+                idx = int(input(f"比赛序号 (1-{len(matches)}): ").strip())
+            except ValueError:
+                print("无效序号")
+                continue
+            if not (1 <= idx <= len(matches)):
+                print("序号超出范围")
+                continue
+            m = matches[idx - 1]
+            print(f"\n正在采集 {m['home']} vs {m['away']} 全部数据（4个详情页，约10秒）...")
+            try:
+                f = FourStepFilter(collector, delay=1.0)
+                md = f.build_match_data(m)
+                result = f.run(md)
+                print_filter_result(result)
+            except Exception as e:
+                print(f"\n分析失败: {e}")
+
+        elif choice == "6":
             print("\n再见！")
             break
 
